@@ -47,6 +47,34 @@ const priorityLabel: Record<TaskPriority, string> = {
   low: "低",
 };
 
+// 優先度セレクトボックスの選択肢。追加フォームと編集フォームで共通利用
+const priorityOptions: { value: TaskPriority; label: string }[] = [
+  { value: "high", label: "高" },
+  { value: "medium", label: "中" },
+  { value: "low", label: "低" },
+];
+
+// タスクの優先度バッジの色（一覧のラベル表示で使う）
+const priorityBadgeClass: Record<TaskPriority, string> = {
+  high: "bg-rose-500/20 text-rose-200",
+  medium: "bg-amber-500/20 text-amber-200",
+  low: "bg-emerald-500/20 text-emerald-200",
+};
+
+// カレンダーの日付に付ける丸印の色
+const priorityDotClass: Record<TaskPriority, string> = {
+  high: "bg-rose-500",
+  medium: "bg-amber-400",
+  low: "bg-cyan-400",
+};
+
+// 優先度フィルターボタンが選ばれているときの色
+const priorityActiveClass: Record<TaskPriority, string> = {
+  high: "bg-rose-500 text-slate-950",
+  medium: "bg-amber-500 text-slate-950",
+  low: "bg-emerald-500 text-slate-950",
+};
+
 // 日付を「2024-08-30」の形に直す。タスクを日付ごとに分類するために使う
 const formatDateKey = (date: Date) => {
   const year = date.getFullYear();
@@ -114,6 +142,32 @@ const getCalendarDays = (baseDate: Date) => {
 
   return days;
 };
+
+// 選択中かどうかで色が変わる丸ボタン。フィルターや切り替えボタンで繰り返し使う
+function FilterPill({
+  active,
+  onClick,
+  children,
+  activeClassName = "bg-cyan-500 text-slate-950",
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  activeClassName?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "rounded-full px-2.5 py-1 text-xs transition",
+        active ? activeClassName : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
 
 // メイン画面のコンポーネント
 export default function Home() {
@@ -204,6 +258,8 @@ export default function Home() {
 
   // カレンダーを表示するために、必要な日付を計算する
   const monthDays = useMemo(() => getCalendarDays(calendarDate), [calendarDate]);
+
+  // 日付ごとのタスク件数と最も高い優先度を集計。カレンダーの印に使う
   const tasksByDate = useMemo(() => {
     const result: Record<string, { count: number; highestPriority: TaskPriority }> = {};
 
@@ -238,14 +294,12 @@ export default function Home() {
     // 全期間なら全タスク、日付別なら選択した日だけを取り出す
     const filtered = showAllTasks ? tasks : tasks.filter((task) => task.date === selectedDateKey);
 
-    // 状態と優先度の条件に合うタスクだけを残す
+    // 状態と優先度、両方の条件に合うタスクだけを残す
     const finalFiltered = filtered.filter((task) => {
-      if (taskFilter === "active") return !task.done;
-      if (taskFilter === "done") return task.done;
-      return true;
-    }).filter((task) => {
-      if (taskPriorityFilter === "all") return true;
-      return task.priority === taskPriorityFilter;
+      const matchesStatus =
+        taskFilter === "all" || (taskFilter === "active" ? !task.done : task.done);
+      const matchesPriority = taskPriorityFilter === "all" || task.priority === taskPriorityFilter;
+      return matchesStatus && matchesPriority;
     });
 
     // 未完了を先に並べ、同じ状態なら優先度の高い順に並べる
@@ -319,6 +373,15 @@ export default function Home() {
     setEditPriority(task.priority);
   };
 
+  // 編集用の入力欄をすべて初期状態に戻す（保存後・キャンセル時どちらでも使う）
+  const resetEditState = () => {
+    setEditingTaskId(null);
+    setEditText("");
+    setEditDetail("");
+    setEditDate(formatDateKey(new Date()));
+    setEditPriority("medium");
+  };
+
   // 編集内容を保存。タスクリストを更新
   const saveEditTask = (event: React.FormEvent) => {
     event.preventDefault();
@@ -340,20 +403,12 @@ export default function Home() {
       ),
     );
 
-    setEditingTaskId(null);
-    setEditText("");
-    setEditDetail("");
-    setEditDate(formatDateKey(new Date()));
-    setEditPriority("medium");
+    resetEditState();
   };
 
   // 編集をやめて、入力欄の内容を空に戻す
   const cancelEditTask = () => {
-    setEditingTaskId(null);
-    setEditText("");
-    setEditDetail("");
-    setEditDate(formatDateKey(new Date()));
-    setEditPriority("medium");
+    resetEditState();
   };
 
   // メモを消す処理
@@ -489,12 +544,7 @@ export default function Home() {
                   const dateKey = formatDateKey(date);
                   const taskMeta = tasksByDate[dateKey] ?? { count: 0, highestPriority: "low" };
                   const taskCount = taskMeta.count;
-                  const badgeColor =
-                    taskMeta.highestPriority === "high"
-                      ? "bg-rose-500"
-                      : taskMeta.highestPriority === "medium"
-                        ? "bg-amber-400"
-                        : "bg-cyan-400";
+                  const badgeColor = priorityDotClass[taskMeta.highestPriority];
 
                   return (
                     <button
@@ -544,30 +594,12 @@ export default function Home() {
                   <div>
                     <label className="mb-2 block text-xs font-semibold uppercase text-slate-300">期間</label>
                     <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowAllTasks(false)}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          !showAllTasks
-                            ? "bg-cyan-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
+                      <FilterPill active={!showAllTasks} onClick={() => setShowAllTasks(false)}>
                         日付別
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowAllTasks(true)}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          showAllTasks
-                            ? "bg-cyan-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
+                      </FilterPill>
+                      <FilterPill active={showAllTasks} onClick={() => setShowAllTasks(true)}>
                         全期間
-                      </button>
+                      </FilterPill>
                     </div>
                   </div>
 
@@ -580,19 +612,13 @@ export default function Home() {
                         { value: "active", label: "未完了" },
                         { value: "done", label: "完了済み" },
                       ].map((filter) => (
-                        <button
+                        <FilterPill
                           key={filter.value}
-                          type="button"
+                          active={taskFilter === filter.value}
                           onClick={() => setTaskFilter(filter.value as TaskFilter)}
-                          className={[
-                            "rounded-full px-2.5 py-1 text-xs transition",
-                            taskFilter === filter.value
-                              ? "bg-cyan-500 text-slate-950"
-                              : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                          ].join(" ")}
                         >
                           {filter.label}
-                        </button>
+                        </FilterPill>
                       ))}
                     </div>
                   </div>
@@ -601,54 +627,19 @@ export default function Home() {
                   <div>
                     <label className="mb-2 block text-xs font-semibold uppercase text-slate-300">優先度</label>
                     <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
-                      <button
-                        type="button"
-                        onClick={() => setTaskPriorityFilter("all")}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          taskPriorityFilter === "all"
-                            ? "bg-cyan-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
+                      <FilterPill active={taskPriorityFilter === "all"} onClick={() => setTaskPriorityFilter("all")}>
                         すべて
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTaskPriorityFilter("high")}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          taskPriorityFilter === "high"
-                            ? "bg-rose-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
-                        高
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTaskPriorityFilter("medium")}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          taskPriorityFilter === "medium"
-                            ? "bg-amber-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
-                        中
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTaskPriorityFilter("low")}
-                        className={[
-                          "rounded-full px-2.5 py-1 text-xs transition",
-                          taskPriorityFilter === "low"
-                            ? "bg-emerald-500 text-slate-950"
-                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                        ].join(" ")}
-                      >
-                        低
-                      </button>
+                      </FilterPill>
+                      {priorityOptions.map((option) => (
+                        <FilterPill
+                          key={option.value}
+                          active={taskPriorityFilter === option.value}
+                          onClick={() => setTaskPriorityFilter(option.value)}
+                          activeClassName={priorityActiveClass[option.value]}
+                        >
+                          {option.label}
+                        </FilterPill>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -695,9 +686,11 @@ export default function Home() {
                         onChange={(event) => setTaskPriority(event.target.value as TaskPriority)}
                         className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
                       >
-                        <option value="high">優先度: 高</option>
-                        <option value="medium">優先度: 中</option>
-                        <option value="low">優先度: 低</option>
+                        {priorityOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            優先度: {option.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <textarea
@@ -734,13 +727,13 @@ export default function Home() {
 
               <div className="max-h-96 overflow-y-auto pr-2">
                 <ul className="space-y-3">
-                {visibleTasks.length === 0 ? (
-                  <li className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
-                    表示するタスクがありません
-                  </li>
-                ) : (
-                  visibleTasks.map((task) => {
-                    const isEditing = editingTaskId === task.id;
+                  {visibleTasks.length === 0 ? (
+                    <li className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
+                      表示するタスクがありません
+                    </li>
+                  ) : (
+                    visibleTasks.map((task) => {
+                      const isEditing = editingTaskId === task.id;
 
                     return (
                       <li
@@ -773,9 +766,11 @@ export default function Home() {
                                 onChange={(event) => setEditPriority(event.target.value as TaskPriority)}
                                 className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
                               >
-                                <option value="high">高</option>
-                                <option value="medium">中</option>
-                                <option value="low">低</option>
+                                {priorityOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
                               </select>
                             </div>
                             <div className="flex justify-end gap-2">
@@ -806,11 +801,7 @@ export default function Home() {
                               <span
                                 className={[
                                   "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                  task.priority === "high"
-                                    ? "bg-rose-500/20 text-rose-200"
-                                    : task.priority === "medium"
-                                      ? "bg-amber-500/20 text-amber-200"
-                                      : "bg-emerald-500/20 text-emerald-200",
+                                  priorityBadgeClass[task.priority],
                                 ].join(" ")}
                               >
                                 {priorityLabel[task.priority]}
@@ -862,7 +853,7 @@ export default function Home() {
                     );
                   })
                 )}
-              </ul>
+                </ul>
               </div>
 
               {/* 正方形で角が丸い「+」ボタン（固定位置） */}
