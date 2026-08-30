@@ -5,16 +5,22 @@
 // useState: 画面で使うデータを保持
 // useEffect: 画面の表示時や値の変化時に処理を実行
 // useMemo: 何度も計算しないように、必要なときだけ結果を返す
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../lib/supabase";
 
 // タスクの優先度の種類を決める
 // 高・中・低で管理する
 type TaskPriority = "high" | "medium" | "low";
 type TaskFilter = "all" | "active" | "done";
+// 繰り返し設定。noneは繰り返さない通常のタスク
+type TaskRepeat = "none" | "daily" | "weekly";
 
 // タスクの型を定義
 // done: 完了したかどうか
 // priority: 優先度
+// order: 手動の並び順（ドラッグ&ドロップで変わる）
+// repeat: 完了時に次の予定を自動で作る繰り返し設定
+// repeatWeekdays: 毎週の場合に対象とする曜日（0=日〜6=土）。空なら元の曜日のまま7日後
 type Task = {
   id: number;
   text: string;
@@ -22,6 +28,9 @@ type Task = {
   done: boolean;
   priority: TaskPriority;
   date: string;
+  order: number;
+  repeat: TaskRepeat;
+  repeatWeekdays: number[];
 };
 
 // よく使うリンクの型を定義
@@ -31,6 +40,18 @@ type Shortcut = {
   label: string;
   url: string;
   emoji: string;
+};
+
+// メモの型を定義。tagで複数のメモを区別する
+// scope: "common"は毎日共通、"date"はdateで指定した日だけ表示
+type MemoScope = "common" | "date";
+
+type Memo = {
+  id: number;
+  tag: string;
+  text: string;
+  scope: MemoScope;
+  date: string;
 };
 
 // 優先度の順序を決める。数字が大きいほど高い優先度
@@ -75,6 +96,20 @@ const priorityActiveClass: Record<TaskPriority, string> = {
   low: "bg-emerald-500 text-slate-950",
 };
 
+// 繰り返し設定セレクトボックスの選択肢
+const repeatOptions: { value: TaskRepeat; label: string }[] = [
+  { value: "none", label: "繰り返さない" },
+  { value: "daily", label: "毎日" },
+  { value: "weekly", label: "毎週" },
+];
+
+// 繰り返し設定を短く表示するための対応表
+const repeatIcon: Record<TaskRepeat, string> = {
+  none: "",
+  daily: "🔁 毎日",
+  weekly: "🔁 毎週",
+};
+
 // 日付を「2024-08-30」の形に直す。タスクを日付ごとに分類するために使う
 const formatDateKey = (date: Date) => {
   const year = date.getFullYear();
@@ -82,6 +117,32 @@ const formatDateKey = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
+
+// 毎週の繰り返しで、次に予定を作る日付を計算する
+// 曜日の指定があれば、翌日以降で最初に一致する曜日を探す。指定がなければ7日後
+const getNextWeeklyDate = (currentDateKey: string, weekdays: number[]) => {
+  const current = new Date(`${currentDateKey}T00:00:00`);
+
+  if (weekdays.length === 0) {
+    const next = new Date(current);
+    next.setDate(next.getDate() + 7);
+    return next;
+  }
+
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const candidate = new Date(current);
+    candidate.setDate(candidate.getDate() + offset);
+    if (weekdays.includes(candidate.getDay())) return candidate;
+  }
+
+  const fallback = new Date(current);
+  fallback.setDate(fallback.getDate() + 7);
+  return fallback;
+};
+
+// 曜日の選択をオン/オフ切り替える
+const toggleWeekdaySelection = (day: number, current: number[]) =>
+  current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort((a, b) => a - b);
 
 // 最初に表示するサンプルタスク
 const defaultTasks: Task[] = [
@@ -92,6 +153,9 @@ const defaultTasks: Task[] = [
     done: false,
     priority: "high",
     date: formatDateKey(new Date()),
+    order: 1,
+    repeat: "none",
+    repeatWeekdays: [],
   },
   {
     id: 2,
@@ -100,6 +164,9 @@ const defaultTasks: Task[] = [
     done: true,
     priority: "medium",
     date: formatDateKey(new Date(Date.now() + 86400000)),
+    order: 2,
+    repeat: "none",
+    repeatWeekdays: [],
   },
   {
     id: 3,
@@ -108,6 +175,9 @@ const defaultTasks: Task[] = [
     done: false,
     priority: "low",
     date: formatDateKey(new Date()),
+    order: 3,
+    repeat: "daily",
+    repeatWeekdays: [],
   },
 ];
 
@@ -117,6 +187,9 @@ const defaultShortcuts: Shortcut[] = [
   { id: 2, label: "Notion", url: "https://www.notion.so", emoji: "📝" },
   { id: 3, label: "GitHub", url: "https://github.com", emoji: "💻" },
 ];
+
+// 最初に表示するメモ
+const defaultMemos: Memo[] = [{ id: 1, tag: "メモ", text: "", scope: "common", date: formatDateKey(new Date()) }];
 
 // カレンダーの曜日の並びを決める配列
 const weekdayNames = ["日", "月", "火", "水", "木", "金", "土"];
@@ -180,13 +253,19 @@ export default function Home() {
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
   const [taskDate, setTaskDate] = useState(formatDateKey(new Date()));
   const [taskDetail, setTaskDetail] = useState("");
+  const [taskRepeat, setTaskRepeat] = useState<TaskRepeat>("none");
+  const [taskRepeatWeekdays, setTaskRepeatWeekdays] = useState<number[]>([]);
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<TaskPriority | "all">("all");
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [editDetail, setEditDetail] = useState("");
   const [editDate, setEditDate] = useState(formatDateKey(new Date()));
   const [editPriority, setEditPriority] = useState<TaskPriority>("medium");
+  const [editRepeat, setEditRepeat] = useState<TaskRepeat>("none");
+  const [editRepeatWeekdays, setEditRepeatWeekdays] = useState<number[]>([]);
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
+  const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
 
   // 表示設定
   const [showAllTasks, setShowAllTasks] = useState(false);
@@ -194,7 +273,7 @@ export default function Home() {
   const [showFilterMenu, setShowFilterMenu] = useState(false);
 
   // メモとリンク
-  const [memoText, setMemoText] = useState("");
+  const [memos, setMemos] = useState<Memo[]>([]);
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [shortcutLabel, setShortcutLabel] = useState("");
   const [shortcutUrl, setShortcutUrl] = useState("");
@@ -205,29 +284,63 @@ export default function Home() {
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
 
+  // ブラウザ通知
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const notifiedRef = useRef(false);
+
+  // ログインとクラウド同期
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+  const [cloudReady, setCloudReady] = useState(false);
+
   // ページが開かれたときにブラウザに保存されたデータを読み込む
   // localStorage はブラウザの保存箱のようなもの
   useEffect(() => {
     const savedTasks = localStorage.getItem("my-tools-tasks");
-    const savedMemo = localStorage.getItem("my-tools-memo");
+    const savedMemos = localStorage.getItem("my-tools-memos");
+    const legacyMemo = localStorage.getItem("my-tools-memo");
     const savedShortcuts = localStorage.getItem("my-tools-shortcuts");
     const todayKey = formatDateKey(new Date());
 
     // 保存データがあれば使う。なければ最初のデータを使う
     const loadedTasks = savedTasks ? JSON.parse(savedTasks) : defaultTasks;
     setTasks(
-      loadedTasks.map((task: Partial<Task>) => ({
+      loadedTasks.map((task: Partial<Task>, index: number) => ({
         id: task.id ?? Date.now(),
         text: task.text ?? "",
         detail: task.detail ?? "",
         done: Boolean(task.done),
         priority: task.priority ?? "medium",
         date: task.date ?? todayKey,
+        order: task.order ?? index,
+        repeat: task.repeat ?? "none",
+        repeatWeekdays: task.repeatWeekdays ?? [],
       })),
     );
     setTaskDate(todayKey);
     setSelectedDate(new Date());
-    setMemoText(savedMemo ?? "");
+
+    // 複数メモの保存データがあれば使う。なければ旧形式のメモを移行するか、最初のデータを使う
+    if (savedMemos) {
+      setMemos(
+        JSON.parse(savedMemos).map((memo: Partial<Memo>) => ({
+          id: memo.id ?? Date.now(),
+          tag: memo.tag ?? "メモ",
+          text: memo.text ?? "",
+          scope: memo.scope ?? "common",
+          date: memo.date ?? todayKey,
+        })),
+      );
+    } else if (legacyMemo) {
+      setMemos([{ id: Date.now(), tag: "メモ", text: legacyMemo, scope: "common", date: todayKey }]);
+    } else {
+      setMemos(defaultMemos);
+    }
+
     setShortcuts(savedShortcuts ? JSON.parse(savedShortcuts) : defaultShortcuts);
     setIsReady(true);
   }, []);
@@ -247,14 +360,81 @@ export default function Home() {
   // メモの内容が変わったら、ブラウザに保存する
   useEffect(() => {
     if (!isReady) return;
-    localStorage.setItem("my-tools-memo", memoText);
-  }, [memoText, isReady]);
+    localStorage.setItem("my-tools-memos", JSON.stringify(memos));
+  }, [memos, isReady]);
 
   // リンク一覧が変わったら、ブラウザに保存する
   useEffect(() => {
     if (!isReady) return;
     localStorage.setItem("my-tools-shortcuts", JSON.stringify(shortcuts));
   }, [shortcuts, isReady]);
+
+  // ログイン状態が変わったら、表示用のユーザー情報を更新する
+  useEffect(() => {
+    if (!supabase) return;
+
+    const updateUser = (user: { id: string; email?: string } | null) => {
+      setUserId(user?.id ?? null);
+      setUserEmail(user?.email ?? "");
+      setCloudReady(false);
+    };
+
+    supabase.auth.getUser().then(({ data }) => updateUser(data.user));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      updateUser(session?.user ?? null);
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // ログイン直後にクラウドのデータを読み込む。初回は端末のデータをクラウドへ保存する
+  useEffect(() => {
+    if (!supabase || !isReady || !userId || cloudReady) return;
+    const client = supabase;
+
+    const loadCloudData = async () => {
+      const { data, error } = await client
+        .from("user_data")
+        .select("tasks, memos, shortcuts")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) {
+        setAuthMessage("クラウドデータを読み込めませんでした");
+        return;
+      }
+
+      if (data) {
+        setTasks(data.tasks as Task[]);
+        setMemos(data.memos as Memo[]);
+        setShortcuts(data.shortcuts as Shortcut[]);
+      } else {
+        const { error: saveError } = await client
+          .from("user_data")
+          .upsert({ user_id: userId, tasks, memos, shortcuts, updated_at: new Date().toISOString() });
+        if (saveError) {
+          setAuthMessage("最初のクラウド保存に失敗しました");
+          return;
+        }
+      }
+
+      setCloudReady(true);
+    };
+
+    void loadCloudData();
+  }, [cloudReady, isReady, userId]);
+
+  // クラウドの読み込みが済んだ後は、データ変更をSupabaseへ保存する
+  useEffect(() => {
+    if (!supabase || !userId || !cloudReady) return;
+
+    void supabase
+      .from("user_data")
+      .upsert({ user_id: userId, tasks, memos, shortcuts, updated_at: new Date().toISOString() })
+      .then(({ error }) => {
+        if (error) setAuthMessage("クラウド保存に失敗しました");
+      });
+  }, [cloudReady, memos, shortcuts, tasks, userId]);
 
   // カレンダーを表示するために、必要な日付を計算する
   const monthDays = useMemo(() => getCalendarDays(calendarDate), [calendarDate]);
@@ -289,25 +469,38 @@ export default function Home() {
   // 例: 2 / 4 = 50%
   const progressRate = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
 
-  // 表示するタスクを作る。日付・状態・優先度の条件を順番に適用
+  // 表示するタスクを作る。日付・状態・優先度・検索文字の条件を順番に適用
   const visibleTasks = useMemo(() => {
     // 全期間なら全タスク、日付別なら選択した日だけを取り出す
     const filtered = showAllTasks ? tasks : tasks.filter((task) => task.date === selectedDateKey);
 
-    // 状態と優先度、両方の条件に合うタスクだけを残す
+    // 検索文字は前後の空白を無視して、大文字小文字を区別せずに比較する
+    const query = taskSearchQuery.trim().toLowerCase();
+
+    // 状態・優先度・検索文字、すべての条件に合うタスクだけを残す
     const finalFiltered = filtered.filter((task) => {
       const matchesStatus =
         taskFilter === "all" || (taskFilter === "active" ? !task.done : task.done);
       const matchesPriority = taskPriorityFilter === "all" || task.priority === taskPriorityFilter;
-      return matchesStatus && matchesPriority;
+      const matchesSearch =
+        query === "" ||
+        task.text.toLowerCase().includes(query) ||
+        task.detail.toLowerCase().includes(query);
+      return matchesStatus && matchesPriority && matchesSearch;
     });
 
-    // 未完了を先に並べ、同じ状態なら優先度の高い順に並べる
+    // 未完了を先に並べ、同じ状態なら手動の並び順（order）で並べる
     return [...finalFiltered].sort((left, right) => {
       if (left.done !== right.done) return Number(left.done) - Number(right.done);
-      return priorityOrder[right.priority] - priorityOrder[left.priority];
+      return left.order - right.order;
     });
-  }, [tasks, taskFilter, selectedDateKey, showAllTasks, taskPriorityFilter]);
+  }, [tasks, taskFilter, selectedDateKey, showAllTasks, taskPriorityFilter, taskSearchQuery]);
+
+  // 表示するメモを作る。共通メモは常に、日付メモは選択中の日だけ表示
+  const visibleMemos = useMemo(
+    () => memos.filter((memo) => memo.scope === "common" || memo.date === selectedDateKey),
+    [memos, selectedDateKey],
+  );
 
   // カレンダーの月を進める・戻す
   const changeMonth = (offset: number) => {
@@ -339,6 +532,9 @@ export default function Home() {
         done: false,
         priority: taskPriority,
         date: taskDate,
+        order: Date.now(),
+        repeat: taskRepeat,
+        repeatWeekdays: taskRepeat === "weekly" ? taskRepeatWeekdays : [],
       },
     ]);
 
@@ -346,21 +542,47 @@ export default function Home() {
     setInputText("");
     setTaskDetail("");
     setTaskPriority("medium");
+    setTaskRepeat("none");
+    setTaskRepeatWeekdays([]);
     setTaskDate(selectedDateKey);
     setShowAddTaskForm(false);
   };
 
-  // タスクの完了状態を切り替える処理
+  // タスクの完了状態を切り替える処理。繰り返し設定があれば次回分を自動で作る
   const toggleTask = (taskId: number) => {
-    setTasks((currentTasks) =>
-      currentTasks.map((task) =>
+    setTasks((currentTasks) => {
+      const target = currentTasks.find((task) => task.id === taskId);
+      const updated = currentTasks.map((task) =>
         task.id === taskId ? { ...task, done: !task.done } : task,
-      ),
-    );
+      );
+
+      // 未完了 → 完了に切り替えた瞬間だけ、次の予定を作る
+      if (target && !target.done && target.repeat !== "none") {
+        const nextDate =
+          target.repeat === "weekly"
+            ? getNextWeeklyDate(target.date, target.repeatWeekdays)
+            : (() => {
+                const daily = new Date(`${target.date}T00:00:00`);
+                daily.setDate(daily.getDate() + 1);
+                return daily;
+              })();
+
+        updated.push({
+          ...target,
+          id: Date.now(),
+          done: false,
+          date: formatDateKey(nextDate),
+          order: Date.now(),
+        });
+      }
+
+      return updated;
+    });
   };
 
-  // 指定したタスクを削除する処理
+  // 指定したタスクを削除する処理（確認ダイアログでOKされたときだけ削除）
   const deleteTask = (taskId: number) => {
+    if (!window.confirm("このタスクを削除しますか？")) return;
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
   };
 
@@ -371,6 +593,8 @@ export default function Home() {
     setEditDetail(task.detail);
     setEditDate(task.date);
     setEditPriority(task.priority);
+    setEditRepeat(task.repeat);
+    setEditRepeatWeekdays(task.repeatWeekdays);
   };
 
   // 編集用の入力欄をすべて初期状態に戻す（保存後・キャンセル時どちらでも使う）
@@ -380,6 +604,8 @@ export default function Home() {
     setEditDetail("");
     setEditDate(formatDateKey(new Date()));
     setEditPriority("medium");
+    setEditRepeat("none");
+    setEditRepeatWeekdays([]);
   };
 
   // 編集内容を保存。タスクリストを更新
@@ -398,6 +624,8 @@ export default function Home() {
               detail: editDetail.trim(),
               date: editDate,
               priority: editPriority,
+              repeat: editRepeat,
+              repeatWeekdays: editRepeat === "weekly" ? editRepeatWeekdays : [],
             }
           : task,
       ),
@@ -409,11 +637,6 @@ export default function Home() {
   // 編集をやめて、入力欄の内容を空に戻す
   const cancelEditTask = () => {
     resetEditState();
-  };
-
-  // メモを消す処理
-  const clearMemo = () => {
-    setMemoText("");
   };
 
   // よく使うリンクを追加する処理
@@ -440,8 +663,9 @@ export default function Home() {
     setShortcutUrl("");
   };
 
-  // リンクを削除する処理
+  // リンクを削除する処理（確認ダイアログでOKされたときだけ削除）
   const deleteShortcut = (shortcutId: number) => {
+    if (!window.confirm("このリンクを削除しますか？")) return;
     setShortcuts((currentShortcuts) => currentShortcuts.filter((shortcut) => shortcut.id !== shortcutId));
   };
 
@@ -450,6 +674,118 @@ export default function Home() {
     setSelectedDate(date);
     setCalendarDate(new Date(date.getFullYear(), date.getMonth(), 1));
     setTaskDate(formatDateKey(date));
+  };
+
+  // ドラッグしたタスクのIDを覚えておく
+  const handleTaskDragStart = (taskId: number) => {
+    setDraggedTaskId(taskId);
+  };
+
+  // ドロップされた位置に合わせて、表示中のタスクの並び順（order）を作り直す
+  const handleTaskDrop = (targetTaskId: number) => {
+    if (draggedTaskId === null || draggedTaskId === targetTaskId) return;
+
+    const visibleIds = visibleTasks.map((task) => task.id);
+    const draggedIndex = visibleIds.indexOf(draggedTaskId);
+    const targetIndex = visibleIds.indexOf(targetTaskId);
+    if (draggedIndex === -1 || targetIndex === -1) return;
+
+    // ドラッグしたIDを抜いて、ドロップ先の位置に差し込む
+    const reorderedIds = [...visibleIds];
+    reorderedIds.splice(draggedIndex, 1);
+    reorderedIds.splice(targetIndex, 0, draggedTaskId);
+
+    // 新しい並び順を0,1,2...のorder値としてタスクに反映する
+    const orderMap = new Map(reorderedIds.map((id, index) => [id, index]));
+    setTasks((currentTasks) =>
+      currentTasks.map((task) => (orderMap.has(task.id) ? { ...task, order: orderMap.get(task.id)! } : task)),
+    );
+    setDraggedTaskId(null);
+  };
+
+  // ブラウザ通知の使用許可をリクエストする
+  const enableNotifications = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    setNotificationsEnabled(permission === "granted");
+  };
+
+  // メールに届くリンクを開くと、そのままログインできる
+  // メール＋パスワードでのログイン・新規登録処理
+  const handleAuth = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!supabase || !loginEmail.trim() || !loginPassword) return;
+
+    setAuthMessage("処理中...");
+
+    if (isSignUp) {
+      // 新規登録
+      const { error } = await supabase.auth.signUp({
+        email: loginEmail.trim(),
+        password: loginPassword,
+      });
+      setAuthMessage(
+        error ? `登録エラー: ${error.message}` : "確認メールを送信しました。メール内のリンクをクリックしてください。"
+      );
+    } else {
+      // ログイン
+      const { error } = await supabase.auth.signInWithPassword({
+        email: loginEmail.trim(),
+        password: loginPassword,
+      });
+      setAuthMessage(
+        error ? `ログインエラー: ${error.message}` : "ログインしました"
+      );
+    }
+  };
+
+  const signOut = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setAuthMessage("ログアウトしました");
+  };
+
+  // 今日期限で未完了のタスクがあれば、1回だけブラウザ通知を出す
+  useEffect(() => {
+    if (!isReady || !notificationsEnabled || notifiedRef.current) return;
+
+    const todayKey = formatDateKey(new Date());
+    const dueToday = tasks.filter((task) => task.date === todayKey && !task.done);
+    if (dueToday.length === 0) return;
+
+    new Notification("今日のタスク", {
+      body: `${dueToday.length}件のタスクが今日期限です`,
+    });
+    notifiedRef.current = true;
+  }, [isReady, notificationsEnabled, tasks]);
+
+  // よく使うタグ・並び替え・メモの操作
+  const addMemo = () => {
+    setMemos((current) => [
+      ...current,
+      { id: Date.now(), tag: "新しいタグ", text: "", scope: "common", date: selectedDateKey },
+    ]);
+  };
+
+  const updateMemoTag = (memoId: number, tag: string) => {
+    setMemos((current) => current.map((memo) => (memo.id === memoId ? { ...memo, tag } : memo)));
+  };
+
+  const updateMemoText = (memoId: number, text: string) => {
+    setMemos((current) => current.map((memo) => (memo.id === memoId ? { ...memo, text } : memo)));
+  };
+
+  // メモを「毎日共通」か「選択中の日付だけ」に切り替える
+  const updateMemoScope = (memoId: number, scope: MemoScope) => {
+    setMemos((current) =>
+      current.map((memo) => (memo.id === memoId ? { ...memo, scope, date: selectedDateKey } : memo)),
+    );
+  };
+
+  // メモを削除する処理（確認ダイアログでOKされたときだけ削除）
+  const deleteMemo = (memoId: number) => {
+    if (!window.confirm("このメモを削除しますか？")) return;
+    setMemos((current) => current.filter((memo) => memo.id !== memoId));
   };
 
   // HTML ---------------------------------------------------------------------------------------------------------
@@ -462,6 +798,57 @@ export default function Home() {
             <div>
               <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">MY TOOLS</p>
               <h1 className="mt-2 text-3xl font-bold text-white">Today's Task</h1>
+              {supabase ? (
+                userId ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-emerald-300">
+                      {cloudReady ? "クラウド同期中" : "クラウドを読み込み中"}: {userEmail}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={signOut}
+                      className="rounded-lg border border-slate-700 px-2 py-1 text-slate-300 transition hover:border-rose-400 hover:text-rose-200"
+                    >
+                      ログアウト
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleAuth} className="mt-3 flex flex-wrap gap-2">
+                  <input
+                    type="email"
+                    value={loginEmail}
+                    onChange={(event) => setLoginEmail(event.target.value)}
+                    placeholder="メールアドレス"
+                    required
+                    className="w-32 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    onChange={(event) => setLoginPassword(event.target.value)}
+                    placeholder="パスワード"
+                    required
+                    className="w-32 rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-cyan-500 px-2 py-1 text-xs font-medium text-slate-950 transition hover:bg-cyan-400"
+                  >
+                    {isSignUp ? "登録する" : "ログイン"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSignUp(!isSignUp)}
+                    className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                  >
+                    {isSignUp ? "ログインに切り替え" : "新規登録に切り替え"}
+                  </button>
+                </form>
+                )
+              ) : (
+                <p className="mt-3 text-xs text-amber-200">Supabaseの環境変数を設定するとクラウド同期を使えます</p>
+              )}
+              {authMessage && <p className="mt-2 text-xs text-slate-300">{authMessage}</p>}
             </div>
             <div className="rounded-2xl border border-cyan-400/40 bg-cyan-500/10 px-4 py-3 text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-cyan-200">Now</p>
@@ -473,6 +860,13 @@ export default function Home() {
                 }).format(now)}
               </p>
               <p className="text-sm text-cyan-100/90">{now.toLocaleTimeString("ja-JP")}</p>
+              <button
+                type="button"
+                onClick={enableNotifications}
+                className="mt-2 rounded-lg bg-cyan-500/20 px-2 py-1 text-xs font-medium text-cyan-200 transition hover:bg-cyan-500/30"
+              >
+                {notificationsEnabled ? "🔔 通知オン" : "🔔 通知を有効にする"}
+              </button>
             </div>
           </div>
 
@@ -488,7 +882,9 @@ export default function Home() {
             </div>
             <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/20 to-green-500/5 p-5">
               <p className="text-sm text-emerald-200">メモ</p>
-              <p className="mt-3 text-3xl font-bold text-white">{memoText.trim() ? "記録済み" : "未記入"}</p>
+              <p className="mt-3 text-3xl font-bold text-white">
+                {visibleMemos.some((memo) => memo.text.trim()) ? "記録済み" : "未記入"}
+              </p>
             </div>
           </section>
         </header>
@@ -693,6 +1089,30 @@ export default function Home() {
                         ))}
                       </select>
                     </div>
+                    <select
+                      value={taskRepeat}
+                      onChange={(event) => setTaskRepeat(event.target.value as TaskRepeat)}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                    >
+                      {repeatOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          繰り返し: {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {taskRepeat === "weekly" && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {weekdayNames.map((day, index) => (
+                          <FilterPill
+                            key={day}
+                            active={taskRepeatWeekdays.includes(index)}
+                            onClick={() => setTaskRepeatWeekdays((current) => toggleWeekdaySelection(index, current))}
+                          >
+                            {day}
+                          </FilterPill>
+                        ))}
+                      </div>
+                    )}
                     <textarea
                       value={taskDetail}
                       onChange={(event) => setTaskDetail(event.target.value)}
@@ -725,6 +1145,15 @@ export default function Home() {
                   : new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric" }).format(selectedDate)}
               </div>
 
+              {/* タスク名と詳細を対象に検索する */}
+              <input
+                type="text"
+                value={taskSearchQuery}
+                onChange={(event) => setTaskSearchQuery(event.target.value)}
+                placeholder="🔍 タスクを検索"
+                className="mb-3 w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+              />
+
               <div className="max-h-96 overflow-y-auto pr-2">
                 <ul className="space-y-3">
                   {visibleTasks.length === 0 ? (
@@ -734,11 +1163,20 @@ export default function Home() {
                   ) : (
                     visibleTasks.map((task) => {
                       const isEditing = editingTaskId === task.id;
+                      // 今日より前の日付で、まだ完了していなければ期限切れ扱い
+                      const isOverdue = !task.done && task.date < formatDateKey(now);
 
                     return (
                       <li
                         key={task.id}
-                        className="rounded-2xl border border-slate-800 bg-slate-950/40 p-3"
+                        draggable={!isEditing}
+                        onDragStart={() => handleTaskDragStart(task.id)}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={() => handleTaskDrop(task.id)}
+                        className={[
+                          "rounded-2xl border p-3",
+                          isOverdue ? "border-rose-500/70 bg-rose-950/20" : "border-slate-800 bg-slate-950/40",
+                        ].join(" ")}
                       >
                         {isEditing ? (
                           <form onSubmit={saveEditTask} className="space-y-3">
@@ -772,7 +1210,31 @@ export default function Home() {
                                   </option>
                                 ))}
                               </select>
+                              <select
+                                value={editRepeat}
+                                onChange={(event) => setEditRepeat(event.target.value as TaskRepeat)}
+                                className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                              >
+                                {repeatOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
+                            {editRepeat === "weekly" && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {weekdayNames.map((day, index) => (
+                                  <FilterPill
+                                    key={day}
+                                    active={editRepeatWeekdays.includes(index)}
+                                    onClick={() => setEditRepeatWeekdays((current) => toggleWeekdaySelection(index, current))}
+                                  >
+                                    {day}
+                                  </FilterPill>
+                                ))}
+                              </div>
+                            )}
                             <div className="flex justify-end gap-2">
                               <button
                                 type="button"
@@ -806,6 +1268,16 @@ export default function Home() {
                               >
                                 {priorityLabel[task.priority]}
                               </span>
+                              {isOverdue && (
+                                <span className="inline-flex items-center rounded-full bg-rose-500/30 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
+                                  期限切れ
+                                </span>
+                              )}
+                              {task.repeat !== "none" && (
+                                <span className="text-xs text-slate-400" title="繰り返しタスク">
+                                  {repeatIcon[task.repeat]}
+                                </span>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setExpandedTaskId((current) => (current === task.id ? null : task.id))}
@@ -873,18 +1345,56 @@ export default function Home() {
                 <h2 className="text-xl font-semibold text-white">📝 Memo</h2>
                 <button
                   type="button"
-                  onClick={clearMemo}
-                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-rose-400 hover:text-rose-200"
+                  onClick={addMemo}
+                  className="rounded-lg bg-cyan-500/20 px-3 py-1 text-xs font-medium text-cyan-300 transition hover:bg-cyan-500/30"
                 >
-                  クリア
+                  ＋ 追加
                 </button>
               </div>
-              <textarea
-                value={memoText}
-                onChange={(event) => setMemoText(event.target.value)}
-                placeholder="今日の気づきやメモを残そう"
-                className="h-60 w-full resize-none rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
-              />
+
+              {/* タグ付きの複数メモを一覧表示。共通/選択中の日付だけで絞り込む */}
+              <div className="max-h-72 space-y-3 overflow-y-auto pr-2">
+                {visibleMemos.length === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
+                    メモがありません
+                  </p>
+                ) : (
+                  visibleMemos.map((memo) => (
+                    <div key={memo.id} className="rounded-2xl border border-slate-700 bg-slate-950/40 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <input
+                          type="text"
+                          value={memo.tag}
+                          onChange={(event) => updateMemoTag(memo.id, event.target.value)}
+                          className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900/60 px-2 py-1 text-xs text-cyan-200 focus:border-cyan-400 focus:outline-none"
+                        />
+                        <div className="flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 p-0.5">
+                          <FilterPill active={memo.scope === "common"} onClick={() => updateMemoScope(memo.id, "common")}>
+                            共通
+                          </FilterPill>
+                          <FilterPill active={memo.scope === "date"} onClick={() => updateMemoScope(memo.id, "date")}>
+                            この日だけ
+                          </FilterPill>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => deleteMemo(memo.id)}
+                          className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-rose-400 hover:text-rose-200"
+                        >
+                          削除
+                        </button>
+                      </div>
+                      <textarea
+                        value={memo.text}
+                        onChange={(event) => updateMemoText(memo.id, event.target.value)}
+                        placeholder="今日の気づきやメモを残そう"
+                        rows={4}
+                        className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
             </section>
 
             <section className="h-full rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
