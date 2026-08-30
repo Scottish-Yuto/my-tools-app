@@ -1,157 +1,416 @@
-"use client"
-// useState：一時的なメモリ、useFffect：特定のタイミングに、自動で処理を走らせる機能
-import { useState, useEffect, memo } from "react";
+// 「このファイルはブラウザで動く処理を使う」と宣言するための合図
+"use client";
 
-export default function Home() {
-  // タスクのデータを記憶するState
-  const [tasks, setTasks] = useState([
-    { id: 1, text: "mahorobaの次回の企画書を作る", isDone: false },
-    { id: 2, text: "上映予定の映画リストをまとめる", isDone: false },
-  ]);
-  const [inputText, setInputText] = useState("");
-  // メモのデータを記憶するState
-  const [memoText, setMemoText] = useState("");
+// React の機能を読み込む
+// useState: 画面で使うデータを保持
+// useEffect: 画面の表示時や値の変化時に処理を実行
+// useMemo: 何度も計算しないように、必要なときだけ結果を返す
+import { useEffect, useMemo, useState } from "react";
 
-  // 特有のエラーを防ぐためのフラグ
-  const [isMounted, setIsMounted] = useState(false);
+// タスクの型を定義
+// done: 完了したかどうか
+type Task = {
+  id: number;
+  text: string;
+  done: boolean;
+};
 
-  // アプリ起動時にブラウザの保存箱からデータを読み込む
-  useEffect(() => {
-    const savedTasks = localStorage.getItem("my-app-tasks");
-    const savedMemo = localStorage.getItem("my-app-memo");
+// よく使うリンクの型を定義
+// label: 表示する名前, url: 行き先のURL, emoji: アイコン
+type Shortcut = {
+  id: number;
+  label: string;
+  url: string;
+  emoji: string;
+};
 
-    if (savedTasks) {
-      setTasks(JSON.parse(savedTasks));
-    }
-    if (savedMemo) {
-      setMemoText(savedMemo);
-    }
-    setIsMounted(true);
-  }, []);
+// 最初に表示するサンプルのタスク
+// 画面を開いたときに何が表示されるかをすぐ確認できるようにする
+const defaultTasks: Task[] = [
+  { id: 1, text: "デザイン案をまとめる", done: false },
+  { id: 2, text: "明日の会議資料を確認する", done: true },
+  { id: 3, text: "買い物リストを見直す", done: false },
+];
 
-  // タスクが更新されるたびに、ブラウザの保存箱に保存
-  useEffect(() => {
-    if (isMounted) {
-      localStorage.setItem("my-app-tasks", JSON.stringify(tasks));
-    }
-  }, [tasks, isMounted]);
+// 最初に表示するよく使うリンク
+const defaultShortcuts: Shortcut[] = [
+  { id: 1, label: "Gmail", url: "https://mail.google.com", emoji: "✉️" },
+  { id: 2, label: "Notion", url: "https://www.notion.so", emoji: "📝" },
+  { id: 3, label: "GitHub", url: "https://github.com", emoji: "💻" },
+];
 
-  // タスクが更新されるたびに、ブラウザの保存箱に保存
-  useEffect(() => {
-    if (isMounted) {
-      localStorage.setItem("my-app-memo", memoText);
-    }
-  }, [memoText, isMounted]);
+// カレンダーの曜日の並びを決める配列
+const weekdayNames = ["日", "月", "火", "水", "木", "金", "土"];
 
-  // チェックボックスの処理
-  const toggleTask = (taskId: number) => {
-    const newTasks = tasks.map((task) => {
-      if(task.id === taskId) {
-        // クリックされたタスクだけ、完了状態を反転させる
-        return { ...task, isDone: !task.isDone };
-      }
-      return task;
-    });
-    setTasks(newTasks);
+// 指定した月のカレンダーを作る関数
+// 1日が何曜日から始まるかを計算し、前の月の空白も含めて 42 日分を並べる
+const getCalendarDays = (baseDate: Date) => {
+  const year = baseDate.getFullYear();
+  const month = baseDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  // カレンダーの始まりを週の最初に合わせる
+  const start = new Date(firstDay);
+  start.setDate(1 - firstDay.getDay());
+
+  const days: Date[] = [];
+
+  // 6週間分の42日を用意
+  for (let index = 0; index < 42; index += 1) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    days.push(date);
   }
 
-  // 追加ボタンの処理
-  const addTask = (e: React.FormEvent) => {
-    e.preventDefault();
+  return days;
+};
 
-    // 空欄のままなら何もしない
-    if(inputText.trim() === "") 
-      return;
+// 本体
+// Reactコンポーネントとして画面を作る
+export default function Home() {
+  // state を定義する
+  // tasks: タスクの一覧
+  // inputText: タスク入力欄に入っている文字
+  // memoText: メモの内容
+  // shortcuts: よく使うリンクの一覧
+  // shortcutLabel: リンク名の入力値
+  // shortcutUrl: URL の入力値
+  // isReady: 保存データを読み込んだかどうか
+  // now: 現在の時間
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [inputText, setInputText] = useState("");
+  const [memoText, setMemoText] = useState("");
+  const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [shortcutLabel, setShortcutLabel] = useState("");
+  const [shortcutUrl, setShortcutUrl] = useState("");
+  const [isReady, setIsReady] = useState(false);
+  const [now, setNow] = useState(new Date());
 
-    // 新しいタスクのデータを作成
-    const newTask = {
-      id: Date.now(),
-      text: inputText,
-      isDone: false,
-    };
-    // 今のタスク一覧の最後に、新しいタスクを挿入
-    setTasks([...tasks, newTask]);
+  // 最初にページが開かれたとき、ブラウザに保存されているデータを取り出す
+  // localStorage はブラウザの保存箱のようなもの
+  useEffect(() => {
+    const savedTasks = localStorage.getItem("my-tools-tasks");
+    const savedMemo = localStorage.getItem("my-tools-memo");
+    const savedShortcuts = localStorage.getItem("my-tools-shortcuts");
+
+    // 保存データがあれば使う。なければ最初のデータを使う
+    setTasks(savedTasks ? JSON.parse(savedTasks) : defaultTasks);
+    setMemoText(savedMemo ?? "");
+    setShortcuts(savedShortcuts ? JSON.parse(savedShortcuts) : defaultShortcuts);
+    setIsReady(true);
+  }, []);
+
+  // 1 秒ごとに現在時刻を更新し、時計のように動かす
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // タスクの中身が変わったら、ブラウザに保存する
+  useEffect(() => {
+    if (!isReady) return;
+    localStorage.setItem("my-tools-tasks", JSON.stringify(tasks));
+  }, [tasks, isReady]);
+
+  // メモの内容が変わったら、ブラウザに保存する
+  useEffect(() => {
+    if (!isReady) return;
+    localStorage.setItem("my-tools-memo", memoText);
+  }, [memoText, isReady]);
+
+  // リンク一覧が変わったら、ブラウザに保存する
+  useEffect(() => {
+    if (!isReady) return;
+    localStorage.setItem("my-tools-shortcuts", JSON.stringify(shortcuts));
+  }, [shortcuts, isReady]);
+
+  // カレンダーを表示するために、必要な日付を計算する
+  const monthDays = useMemo(() => getCalendarDays(now), [now]);
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+
+  // 完了したタスクの数を数える
+  const completedCount = tasks.filter((task) => task.done).length;
+
+  // 進捗率を計算する
+  // 例: 2 / 4 = 50%
+  const progressRate = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
+
+  // タスクを追加する処理
+  const addTask = (event: React.FormEvent) => {
+    event.preventDefault();
+    const safeText = inputText.trim();
+
+    // 何も入力されていなかったら何もしない
+    if (!safeText) return;
+
+    setTasks((currentTasks) => [
+      ...currentTasks,
+      {
+        id: Date.now(),
+        text: safeText,
+        done: false,
+      },
+    ]);
+
     // 入力欄を空に
     setInputText("");
   };
 
-  // タスクの削除
-  const deleteTask = (taskId: number) => {
-    const newTasks = tasks.filter((task) => task.id !== taskId);
-    setTasks(newTasks);
+  // タスクの完了状態を切り替える処理
+  const toggleTask = (taskId: number) => {
+    setTasks((currentTasks) =>
+      currentTasks.map((task) =>
+        task.id === taskId ? { ...task, done: !task.done } : task,
+      ),
+    );
   };
 
+  // 指定したタスクを削除する処理
+  const deleteTask = (taskId: number) => {
+    setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
+  };
+
+  // よく使うリンクを追加する処理
+  const addShortcut = (event: React.FormEvent) => {
+    event.preventDefault();
+    const label = shortcutLabel.trim();
+    const url = shortcutUrl.trim();
+
+    // 名前か URL が空だったら追加しない
+    if (!label || !url) return;
+
+    setShortcuts((currentShortcuts) => [
+      ...currentShortcuts,
+      {
+        id: Date.now(),
+        label,
+        url: url.startsWith("http") ? url : `https://${url}`,
+        emoji: "🔗",
+      },
+    ]);
+
+    // 入力欄を空に
+    setShortcutLabel("");
+    setShortcutUrl("");
+  };
+
+  // ↓HTML↓
   return (
-    <main className="min-h-screen bg-gray-100 p-6">
-      {/* タイトル */}
-      <h1 className="text-2xl font-bold mb-6 text-gray-800">My Terminal</h1>
-      
-      <div className="flex gap-6 h-[85vh]">
-        {/* 左側：カレンダーエリア */}
-        <div className="flex-1 bg-white rounded-xl shadow-md p-6">
-          <h2 className="text-xl font-semibold mb-4 border-b pb-2">📅 カレンダー</h2>
-          <p className="text-gray-500">（ここにカレンダーが入ります）</p>
-        </div>
+    <main className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {/* ヘッダー部分。ページのタイトルと現在時刻を表示する */}
+        <header className="mb-8 flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-slate-950/30 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">MY TOOLS</p>
+            <h1 className="mt-2 text-3xl font-bold text-white">今日の作業台</h1>
+          </div>
+          <div className="rounded-2xl border border-cyan-400/40 bg-cyan-500/10 px-4 py-3 text-right">
+            <p className="text-xs uppercase tracking-[0.2em] text-cyan-200">Now</p>
+            <p className="mt-1 text-lg font-semibold text-cyan-100">
+              {new Intl.DateTimeFormat("ja-JP", {
+                month: "long",
+                day: "numeric",
+                weekday: "long",
+              }).format(now)}
+            </p>
+            <p className="text-sm text-cyan-100/90">{now.toLocaleTimeString("ja-JP")}</p>
+          </div>
+        </header>
 
-        {/* 右側：タスクとメモエリア */}
-        <div className="w-1/3 flex flex-col gap-6">
-          {/* 右上：タスクエリア */}
-          <div className="flex-1 bg-white rounded-xl shadow-md p-6">
-            <h2 className="text-xl font-semibold mb-4 border-b pb-2" >✅ タスク</h2>
+        {/* 3 つのカードで、進捗状況を一目で確認できるようにする */}
+        <section className="mb-8 grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-500/20 to-sky-500/5 p-5">
+            <p className="text-sm text-cyan-200">完了タスク</p>
+            <p className="mt-3 text-3xl font-bold text-white">{completedCount}</p>
+            <p className="mt-2 text-sm text-slate-300">{tasks.length}件中</p>
+          </div>
+          <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-violet-500/20 to-purple-500/5 p-5">
+            <p className="text-sm text-violet-200">進捗率</p>
+            <p className="mt-3 text-3xl font-bold text-white">{progressRate}%</p>
+            <p className="mt-2 text-sm text-slate-300">今日の進捗</p>
+          </div>
+          <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/20 to-green-500/5 p-5">
+            <p className="text-sm text-emerald-200">メモ</p>
+            <p className="mt-3 text-3xl font-bold text-white">{memoText.trim() ? "記録済み" : "未記入"}</p>
+            <p className="mt-2 text-sm text-slate-300">気づきを残せます</p>
+          </div>
+        </section>
 
-            {/* タスク入力フォーム */}
-            <form onSubmit={addTask} className="flex gap-2 mb-4">
-              <input 
-                type="text" 
-                className="flex-1 w-full border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:border-blue-500 text-gray-900 font-medium"
-                placeholder="タスクを追加"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-              />
-              <button
-                type="submit"
-                className="w-24 shrink-0 bg-blue-500 hover:bg-blue-600 text-white font-medium px-4 py-2 rounded-lg transition-colors"
+        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.9fr]">
+          <div className="space-y-6">
+            {/* 左側の大きいエリア。カレンダーとタスクを並べて表示する */}
+            <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-white">📅 カレンダー</h2>
+                <span className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-200">
+                  {currentYear}年 {currentMonth + 1}月
+                </span>
+              </div>
+
+              {/* 曜日を並べる行 */}
+              <div className="grid grid-cols-7 gap-2 text-center text-xs uppercase tracking-wider text-slate-400">
+                {weekdayNames.map((day) => (
+                  <div key={day} className="py-2">
+                    {day}
+                  </div>
+                ))}
+              </div>
+
+              {/* 1か月分の日付を並べて表示する */}
+              <div className="mt-2 grid grid-cols-7 gap-2">
+                {monthDays.map((date) => {
+                  // 今の月に入っている日かどうかを判定する
+                  const isCurrentMonth = date.getMonth() === currentMonth;
+
+                  // 今日の日付かどうかも判定する
+                  const isToday =
+                    date.getDate() === now.getDate() &&
+                    date.getMonth() === now.getMonth() &&
+                    date.getFullYear() === now.getFullYear();
+
+                  return (
+                    <div
+                      key={`${date.toISOString()}-${date.getDate()}`}
+                      className={[
+                        "flex h-12 items-center justify-center rounded-xl border text-sm",
+                        isCurrentMonth ? "border-slate-700 bg-slate-800/80 text-slate-100" : "border-slate-800 bg-slate-900/50 text-slate-500",
+                        isToday ? "border-cyan-400 bg-cyan-500/20 font-bold text-cyan-200" : "",
+                      ].join(" ")}
+                    >
+                      {date.getDate()}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* タスク一覧を表示するエリア */}
+            <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-white">✅ タスク</h2>
+                <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">
+                  {tasks.length}件
+                </span>
+              </div>
+
+              {/* タスクを追加する入力フォーム */}
+              <form onSubmit={addTask} className="mb-5 flex gap-2">
+                <input
+                  type="text"
+                  value={inputText}
+                  onChange={(event) => setInputText(event.target.value)}
+                  placeholder="新しいタスクを入力"
+                  className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl bg-cyan-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-cyan-400"
                 >
                   追加
                 </button>
-            </form>
+              </form>
 
-            {/* タスクリスト（スクロール） */}
-            <ul className="space-y-3 overflow-y-auto">
-              {tasks.map((task) => (
-                <li key={task.id} className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    className="w-5 h-5 cursor-pointer accent-blue-500 shrink-0"
-                    checked={task.isDone}
-                    onChange={() => toggleTask(task.id)}
-                  />
-                  <span className={task.isDone ? "line-through text-gray-400" : "text-gray-900 font-medium"}>
-                    {task.text}
-                  </span>
-                  {/* 削除ボタン */}
-                  <button
-                    onClick={() => deleteTask(task.id)}
-                    className="text-sm text-red-500 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded transition-colors shrink-0"
+              {/* タスク一覧を表示する */}
+              <ul className="space-y-3">
+                {tasks.length === 0 ? (
+                  <li className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
+                    まだタスクがありません
+                  </li>
+                ) : (
+                  tasks.map((task) => (
+                    <li
+                      key={task.id}
+                      className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/40 p-3"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={task.done}
+                        onChange={() => toggleTask(task.id)}
+                        className="h-5 w-5 accent-cyan-500"
+                      />
+                      <span
+                        className={[
+                          "flex-1 text-sm",
+                          task.done ? "text-slate-500 line-through" : "text-slate-100",
+                        ].join(" ")}
+                      >
+                        {task.text}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => deleteTask(task.id)}
+                        className="rounded-lg px-2 py-1 text-xs text-rose-300 transition hover:bg-rose-500/10 hover:text-rose-200"
+                      >
+                        削除
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </section>
+          </div>
+
+          <aside className="space-y-6">
+            {/* 右側のメモ書きエリア */}
+            <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-white">📝 メモ</h2>
+                <span className="text-xs text-slate-400">Auto save</span>
+              </div>
+              <textarea
+                value={memoText}
+                onChange={(event) => setMemoText(event.target.value)}
+                placeholder="今日の気づきやメモを残そう"
+                className="h-60 w-full resize-none rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+              />
+            </section>
+
+            {/* よく使うサイトを登録して、ワンクリックで開けるようにする */}
+            <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
+              <h2 className="mb-4 text-xl font-semibold text-white">⚡ クイックアクセス</h2>
+
+              <form onSubmit={addShortcut} className="mb-4 space-y-3">
+                <input
+                  type="text"
+                  value={shortcutLabel}
+                  onChange={(event) => setShortcutLabel(event.target.value)}
+                  placeholder="サイト名"
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                />
+                <input
+                  type="text"
+                  value={shortcutUrl}
+                  onChange={(event) => setShortcutUrl(event.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="w-full rounded-xl bg-violet-500 px-4 py-2 font-medium text-white transition hover:bg-violet-400"
+                >
+                  追加する
+                </button>
+              </form>
+
+              <div className="space-y-3">
+                {shortcuts.map((shortcut) => (
+                  <a
+                    key={shortcut.id}
+                    href={shortcut.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-left transition hover:border-cyan-400/60 hover:bg-slate-800/80"
                   >
-                    削除
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* 右下：メモエリア */}
-          <div className="flex-1 flex-col bg-white rounded-xl shadow-md p-6">
-            <h2 className="text-xl font-semibold mb-4 border-b pb-2">📝 メモ</h2>
-            <textarea
-              className="flex-1 w-full border border-gray-300 rounded-lg p-3 focus:outline-none focus:border-blue-500 resize-none text-gray-900 font-medium"
-              placeholder="メモ"
-              value={memoText}
-              onChange={(e) => setMemoText(e.target.value)}
-            />
-          </div>
-          
+                    <span className="flex items-center gap-3">
+                      <span className="text-xl">{shortcut.emoji}</span>
+                      <span className="text-sm font-medium text-slate-100">{shortcut.label}</span>
+                    </span>
+                    <span className="text-xs text-slate-400">Open</span>
+                  </a>
+                ))}
+              </div>
+            </section>
+          </aside>
         </div>
       </div>
     </main>
