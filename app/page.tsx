@@ -18,6 +18,7 @@ type TaskFilter = "all" | "active" | "done";
 type Task = {
   id: number;
   text: string;
+  detail: string;
   done: boolean;
   priority: TaskPriority;
   date: string;
@@ -32,20 +33,21 @@ type Shortcut = {
   emoji: string;
 };
 
+// 優先度の順序を決める。数字が大きいほど高い優先度
 const priorityOrder: Record<TaskPriority, number> = {
   high: 3,
   medium: 2,
   low: 1,
 };
 
+// 優先度を日本語で表示するときの対応表
 const priorityLabel: Record<TaskPriority, string> = {
   high: "高",
   medium: "中",
   low: "低",
 };
 
-// 最初に表示するサンプルのタスク
-// 画面を開いたときに何が表示されるかをすぐ確認できるようにする
+// 日付を「2024-08-30」の形に直す。タスクを日付ごとに分類するために使う
 const formatDateKey = (date: Date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -53,10 +55,32 @@ const formatDateKey = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
+// 最初に表示するサンプルタスク
 const defaultTasks: Task[] = [
-  { id: 1, text: "デザイン案をまとめる", done: false, priority: "high", date: formatDateKey(new Date()) },
-  { id: 2, text: "明日の会議資料を確認する", done: true, priority: "medium", date: formatDateKey(new Date(Date.now() + 86400000)) },
-  { id: 3, text: "買い物リストを見直す", done: false, priority: "low", date: formatDateKey(new Date()) },
+  {
+    id: 1,
+    text: "デザイン案をまとめる",
+    detail: "目的\n・今週の方向性を固める\n・参考サイトを3件に絞る",
+    done: false,
+    priority: "high",
+    date: formatDateKey(new Date()),
+  },
+  {
+    id: 2,
+    text: "明日の会議資料を確認する",
+    detail: "資料は最後に見直す\n- タイトル\n- 結論\n- 依頼事項",
+    done: true,
+    priority: "medium",
+    date: formatDateKey(new Date(Date.now() + 86400000)),
+  },
+  {
+    id: 3,
+    text: "買い物リストを見直す",
+    detail: "今日の買い出し\n・牛乳\n・パン\n・洗剤",
+    done: false,
+    priority: "low",
+    date: formatDateKey(new Date()),
+  },
 ];
 
 // 最初に表示するよく使うリンク
@@ -75,13 +99,13 @@ const getCalendarDays = (baseDate: Date) => {
   const year = baseDate.getFullYear();
   const month = baseDate.getMonth();
   const firstDay = new Date(year, month, 1);
-  // カレンダーの始まりを週の最初に合わせる
+  // 月の最初の日を基準に、そこから何日前に月曜日があるかを計算
   const start = new Date(firstDay);
   start.setDate(1 - firstDay.getDay());
 
   const days: Date[] = [];
 
-  // 6週間分の42日を用意
+  // 6週間（42日）分の日付を配列に追加
   for (let index = 0; index < 42; index += 1) {
     const date = new Date(start);
     date.setDate(start.getDate() + index);
@@ -91,38 +115,43 @@ const getCalendarDays = (baseDate: Date) => {
   return days;
 };
 
-// 本体
-// Reactコンポーネントとして画面を作る
+// メイン画面のコンポーネント
 export default function Home() {
-  // state を定義する
-  // tasks: タスクの一覧
-  // inputText: タスク入力欄に入っている文字
-  // memoText: メモの内容
-  // shortcuts: よく使うリンクの一覧
-  // shortcutLabel: リンク名の入力値
-  // shortcutUrl: URL の入力値
-  // isReady: 保存データを読み込んだかどうか
-  // now: 現在の時間
+  // 画面で使う各種データを定義
+
+  // タスク関連
   const [tasks, setTasks] = useState<Task[]>([]);
   const [inputText, setInputText] = useState("");
   const [taskPriority, setTaskPriority] = useState<TaskPriority>("medium");
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
-  const [showAllTasks, setShowAllTasks] = useState(false);
   const [taskDate, setTaskDate] = useState(formatDateKey(new Date()));
+  const [taskDetail, setTaskDetail] = useState("");
+  const [taskPriorityFilter, setTaskPriorityFilter] = useState<TaskPriority | "all">("all");
   const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
+  const [editDetail, setEditDetail] = useState("");
   const [editDate, setEditDate] = useState(formatDateKey(new Date()));
   const [editPriority, setEditPriority] = useState<TaskPriority>("medium");
+  const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
+
+  // 表示設定
+  const [showAllTasks, setShowAllTasks] = useState(false);
+  const [showAddTaskForm, setShowAddTaskForm] = useState(false);
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
+
+  // メモとリンク
   const [memoText, setMemoText] = useState("");
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [shortcutLabel, setShortcutLabel] = useState("");
   const [shortcutUrl, setShortcutUrl] = useState("");
+
+  // 日時とカレンダー
   const [isReady, setIsReady] = useState(false);
   const [now, setNow] = useState(new Date());
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
 
-  // 最初にページが開かれたとき、ブラウザに保存されているデータを取り出す
+  // ページが開かれたときにブラウザに保存されたデータを読み込む
   // localStorage はブラウザの保存箱のようなもの
   useEffect(() => {
     const savedTasks = localStorage.getItem("my-tools-tasks");
@@ -136,6 +165,7 @@ export default function Home() {
       loadedTasks.map((task: Partial<Task>) => ({
         id: task.id ?? Date.now(),
         text: task.text ?? "",
+        detail: task.detail ?? "",
         done: Boolean(task.done),
         priority: task.priority ?? "medium",
         date: task.date ?? todayKey,
@@ -203,24 +233,34 @@ export default function Home() {
   // 例: 2 / 4 = 50%
   const progressRate = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
 
+  // 表示するタスクを作る。日付・状態・優先度の条件を順番に適用
   const visibleTasks = useMemo(() => {
+    // 全期間なら全タスク、日付別なら選択した日だけを取り出す
     const filtered = showAllTasks ? tasks : tasks.filter((task) => task.date === selectedDateKey);
+
+    // 状態と優先度の条件に合うタスクだけを残す
     const finalFiltered = filtered.filter((task) => {
       if (taskFilter === "active") return !task.done;
       if (taskFilter === "done") return task.done;
       return true;
+    }).filter((task) => {
+      if (taskPriorityFilter === "all") return true;
+      return task.priority === taskPriorityFilter;
     });
 
+    // 未完了を先に並べ、同じ状態なら優先度の高い順に並べる
     return [...finalFiltered].sort((left, right) => {
       if (left.done !== right.done) return Number(left.done) - Number(right.done);
       return priorityOrder[right.priority] - priorityOrder[left.priority];
     });
-  }, [tasks, taskFilter, selectedDateKey, showAllTasks]);
+  }, [tasks, taskFilter, selectedDateKey, showAllTasks, taskPriorityFilter]);
 
+  // カレンダーの月を進める・戻す
   const changeMonth = (offset: number) => {
     setCalendarDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
   };
 
+  // カレンダーとタスクの日付を今日に戻す
   const resetCalendarToToday = () => {
     const today = new Date(now);
     setCalendarDate(today);
@@ -228,7 +268,7 @@ export default function Home() {
     setTaskDate(formatDateKey(today));
   };
 
-  // タスクを追加する処理
+  // 新しいタスクをリストに追加処理
   const addTask = (event: React.FormEvent) => {
     event.preventDefault();
     const safeText = inputText.trim();
@@ -241,6 +281,7 @@ export default function Home() {
       {
         id: Date.now(),
         text: safeText,
+        detail: taskDetail.trim(),
         done: false,
         priority: taskPriority,
         date: taskDate,
@@ -249,8 +290,10 @@ export default function Home() {
 
     // 入力欄を空に
     setInputText("");
+    setTaskDetail("");
     setTaskPriority("medium");
     setTaskDate(selectedDateKey);
+    setShowAddTaskForm(false);
   };
 
   // タスクの完了状態を切り替える処理
@@ -267,13 +310,16 @@ export default function Home() {
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
   };
 
+  // 編集画面を開く。編集するタスクの内容を入力欄に反映
   const startEditTask = (task: Task) => {
     setEditingTaskId(task.id);
     setEditText(task.text);
+    setEditDetail(task.detail);
     setEditDate(task.date);
     setEditPriority(task.priority);
   };
 
+  // 編集内容を保存。タスクリストを更新
   const saveEditTask = (event: React.FormEvent) => {
     event.preventDefault();
     const safeText = editText.trim();
@@ -286,6 +332,7 @@ export default function Home() {
           ? {
               ...task,
               text: safeText,
+              detail: editDetail.trim(),
               date: editDate,
               priority: editPriority,
             }
@@ -295,13 +342,16 @@ export default function Home() {
 
     setEditingTaskId(null);
     setEditText("");
+    setEditDetail("");
     setEditDate(formatDateKey(new Date()));
     setEditPriority("medium");
   };
 
+  // 編集をやめて、入力欄の内容を空に戻す
   const cancelEditTask = () => {
     setEditingTaskId(null);
     setEditText("");
+    setEditDetail("");
     setEditDate(formatDateKey(new Date()));
     setEditPriority("medium");
   };
@@ -340,6 +390,7 @@ export default function Home() {
     setShortcuts((currentShortcuts) => currentShortcuts.filter((shortcut) => shortcut.id !== shortcutId));
   };
 
+  // カレンダーの日を選び、タスク表示と追加する日付を合わせる
   const handleCalendarDayClick = (date: Date) => {
     setSelectedDate(date);
     setCalendarDate(new Date(date.getFullYear(), date.getMonth(), 1));
@@ -474,107 +525,215 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
+            <section className="relative rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold text-white">✅ Task</h2>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowAllTasks(false)}
-                      className={[
-                        "rounded-full px-2.5 py-1 text-xs transition",
-                        !showAllTasks
-                          ? "bg-cyan-500 text-slate-950"
-                          : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                      ].join(" ")}
-                    >
-                      日付別
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowAllTasks(true)}
-                      className={[
-                        "rounded-full px-2.5 py-1 text-xs transition",
-                        showAllTasks
-                          ? "bg-cyan-500 text-slate-950"
-                          : "bg-transparent text-slate-300 hover:bg-slate-700/60",
-                      ].join(" ")}
-                    >
-                      全期間
-                    </button>
-                  </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFilterMenu(!showFilterMenu)}
+                  className="rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-medium text-cyan-300 transition hover:bg-cyan-500/30"
+                >
+                  {showFilterMenu ? "✕ 閉じる" : "☰"}
+                </button>
+              </div>
 
-                  <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
-                    {[
-                      { value: "all", label: "すべて" },
-                      { value: "active", label: "未完了" },
-                      { value: "done", label: "完了済み" },
-                    ].map((filter) => (
+              {showFilterMenu && (
+                /* メニューバー：絶対配置のポップオーバーで、最前面に表示 */
+                <div className="absolute right-5 top-16 z-40 w-72 space-y-3 rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+                  {/* 日付別/全期間の切り替え */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase text-slate-300">期間</label>
+                    <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
                       <button
-                        key={filter.value}
                         type="button"
-                        onClick={() => setTaskFilter(filter.value as TaskFilter)}
+                        onClick={() => setShowAllTasks(false)}
                         className={[
                           "rounded-full px-2.5 py-1 text-xs transition",
-                          taskFilter === filter.value
+                          !showAllTasks
                             ? "bg-cyan-500 text-slate-950"
                             : "bg-transparent text-slate-300 hover:bg-slate-700/60",
                         ].join(" ")}
                       >
-                        {filter.label}
+                        日付別
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        onClick={() => setShowAllTasks(true)}
+                        className={[
+                          "rounded-full px-2.5 py-1 text-xs transition",
+                          showAllTasks
+                            ? "bg-cyan-500 text-slate-950"
+                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                        ].join(" ")}
+                      >
+                        全期間
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 状態でフィルター */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase text-slate-300">状態</label>
+                    <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
+                      {[
+                        { value: "all", label: "すべて" },
+                        { value: "active", label: "未完了" },
+                        { value: "done", label: "完了済み" },
+                      ].map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          onClick={() => setTaskFilter(filter.value as TaskFilter)}
+                          className={[
+                            "rounded-full px-2.5 py-1 text-xs transition",
+                            taskFilter === filter.value
+                              ? "bg-cyan-500 text-slate-950"
+                              : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                          ].join(" ")}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 優先度でフィルター */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase text-slate-300">優先度</label>
+                    <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setTaskPriorityFilter("all")}
+                        className={[
+                          "rounded-full px-2.5 py-1 text-xs transition",
+                          taskPriorityFilter === "all"
+                            ? "bg-cyan-500 text-slate-950"
+                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                        ].join(" ")}
+                      >
+                        すべて
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTaskPriorityFilter("high")}
+                        className={[
+                          "rounded-full px-2.5 py-1 text-xs transition",
+                          taskPriorityFilter === "high"
+                            ? "bg-rose-500 text-slate-950"
+                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                        ].join(" ")}
+                      >
+                        高
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTaskPriorityFilter("medium")}
+                        className={[
+                          "rounded-full px-2.5 py-1 text-xs transition",
+                          taskPriorityFilter === "medium"
+                            ? "bg-amber-500 text-slate-950"
+                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                        ].join(" ")}
+                      >
+                        中
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTaskPriorityFilter("low")}
+                        className={[
+                          "rounded-full px-2.5 py-1 text-xs transition",
+                          taskPriorityFilter === "low"
+                            ? "bg-emerald-500 text-slate-950"
+                            : "bg-transparent text-slate-300 hover:bg-slate-700/60",
+                        ].join(" ")}
+                      >
+                        低
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
-              <div className="mb-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">
+              {showAddTaskForm && (
+                <div className="absolute bottom-20 right-5 z-40 w-80 max-w-[calc(100%-2.5rem)] space-y-3 rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+                  <form onSubmit={addTask} className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-white">新しいタスク</h3>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddTaskForm(false)}
+                        className="text-2xl text-slate-400 transition hover:text-slate-200"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={inputText}
+                      onChange={(event) => setInputText(event.target.value)}
+                      placeholder="タスクの内容"
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                      autoFocus
+                    />
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="date"
+                        value={taskDate}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setTaskDate(value);
+                          if (value) {
+                            const newDate = new Date(`${value}T00:00:00`);
+                            setSelectedDate(newDate);
+                            setCalendarDate(new Date(newDate.getFullYear(), newDate.getMonth(), 1));
+                          }
+                        }}
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                      />
+                      <select
+                        value={taskPriority}
+                        onChange={(event) => setTaskPriority(event.target.value as TaskPriority)}
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                      >
+                        <option value="high">優先度: 高</option>
+                        <option value="medium">優先度: 中</option>
+                        <option value="low">優先度: 低</option>
+                      </select>
+                    </div>
+                    <textarea
+                      value={taskDetail}
+                      onChange={(event) => setTaskDetail(event.target.value)}
+                      placeholder="詳細を入力（複数行OK）"
+                      rows={3}
+                      className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddTaskForm(false)}
+                        className="rounded-xl px-4 py-2 text-sm text-slate-300 transition hover:bg-slate-800"
+                      >
+                        キャンセル
+                      </button>
+                      <button
+                        type="submit"
+                        className="rounded-xl bg-cyan-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-cyan-400"
+                      >
+                        追加
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              <div className="mb-3 text-sm text-slate-400">
                 {showAllTasks
-                  ? "全期間のタスクを表示中"
-                  : `選択中の日付: ${new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric" }).format(selectedDate)}`}
+                  ? "全期間を表示中"
+                  : new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric" }).format(selectedDate)}
               </div>
 
-              <form onSubmit={addTask} className="mb-5 flex flex-col gap-2 sm:flex-row">
-                <input
-                  type="text"
-                  value={inputText}
-                  onChange={(event) => setInputText(event.target.value)}
-                  placeholder="新しいタスクを入力"
-                  className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
-                />
-                <input
-                  type="date"
-                  value={taskDate}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setTaskDate(value);
-                    if (value) {
-                      const newDate = new Date(`${value}T00:00:00`);
-                      setSelectedDate(newDate);
-                      setCalendarDate(new Date(newDate.getFullYear(), newDate.getMonth(), 1));
-                    }
-                  }}
-                  className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
-                />
-                <select
-                  value={taskPriority}
-                  onChange={(event) => setTaskPriority(event.target.value as TaskPriority)}
-                  className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
-                >
-                  <option value="high">高</option>
-                  <option value="medium">中</option>
-                  <option value="low">低</option>
-                </select>
-                <button
-                  type="submit"
-                  className="rounded-xl bg-cyan-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-cyan-400"
-                >
-                  ＋
-                </button>
-              </form>
-
-              <ul className="space-y-3">
+              <div className="max-h-96 overflow-y-auto pr-2">
+                <ul className="space-y-3">
                 {visibleTasks.length === 0 ? (
                   <li className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
                     表示するタスクがありません
@@ -595,6 +754,12 @@ export default function Home() {
                               value={editText}
                               onChange={(event) => setEditText(event.target.value)}
                               className="w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                            />
+                            <textarea
+                              value={editDetail}
+                              onChange={(event) => setEditDetail(event.target.value)}
+                              rows={3}
+                              className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
                             />
                             <div className="flex flex-col gap-2 sm:flex-row">
                               <input
@@ -630,47 +795,67 @@ export default function Home() {
                             </div>
                           </form>
                         ) : (
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="checkbox"
-                              checked={task.done}
-                              onChange={() => toggleTask(task.id)}
-                              className="h-5 w-5 accent-cyan-500"
-                            />
-                            <span
-                              className={[
-                                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                task.priority === "high"
-                                  ? "bg-rose-500/20 text-rose-200"
-                                  : task.priority === "medium"
-                                    ? "bg-amber-500/20 text-amber-200"
-                                    : "bg-emerald-500/20 text-emerald-200",
-                              ].join(" ")}
-                            >
-                              {priorityLabel[task.priority]}
-                            </span>
-                            <span
-                              className={[
-                                "flex-1 text-sm",
-                                task.done ? "text-slate-500 line-through" : "text-slate-100",
-                              ].join(" ")}
-                            >
-                              {task.text}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => startEditTask(task)}
-                              className="rounded-lg px-2 py-1 text-xs text-cyan-300 transition hover:bg-cyan-500/10 hover:text-cyan-200"
-                            >
-                              編集
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => deleteTask(task.id)}
-                              className="rounded-lg px-2 py-1 text-xs text-rose-300 transition hover:bg-rose-500/10 hover:text-rose-200"
-                            >
-                              削除
-                            </button>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={task.done}
+                                onChange={() => toggleTask(task.id)}
+                                className="h-5 w-5 accent-cyan-500"
+                              />
+                              <span
+                                className={[
+                                  "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                  task.priority === "high"
+                                    ? "bg-rose-500/20 text-rose-200"
+                                    : task.priority === "medium"
+                                      ? "bg-amber-500/20 text-amber-200"
+                                      : "bg-emerald-500/20 text-emerald-200",
+                                ].join(" ")}
+                              >
+                                {priorityLabel[task.priority]}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setExpandedTaskId((current) => (current === task.id ? null : task.id))}
+                                className={[
+                                  "flex flex-1 items-center gap-1.5 text-left text-sm",
+                                  task.done ? "text-slate-500 line-through" : "text-slate-100",
+                                ].join(" ")}
+                              >
+                                <span>{task.text}</span>
+                                {task.detail && (
+                                  <span
+                                    className={[
+                                      "text-xs text-slate-400 transition-transform",
+                                      expandedTaskId === task.id ? "rotate-180" : "",
+                                    ].join(" ")}
+                                  >
+                                    ▼
+                                  </span>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => startEditTask(task)}
+                                className="rounded-lg px-2 py-1 text-xs text-cyan-300 transition hover:bg-cyan-500/10 hover:text-cyan-200"
+                              >
+                                編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteTask(task.id)}
+                                className="rounded-lg px-2 py-1 text-xs text-rose-300 transition hover:bg-rose-500/10 hover:text-rose-200"
+                              >
+                                削除
+                              </button>
+                            </div>
+
+                            {task.detail && expandedTaskId === task.id && (
+                              <div className="ml-8 rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-sm whitespace-pre-line text-slate-200">
+                                {task.detail}
+                              </div>
+                            )}
                           </div>
                         )}
                       </li>
@@ -678,6 +863,16 @@ export default function Home() {
                   })
                 )}
               </ul>
+              </div>
+
+              {/* 正方形で角が丸い「+」ボタン（固定位置） */}
+              <button
+                type="button"
+                onClick={() => setShowAddTaskForm(!showAddTaskForm)}
+                className="absolute bottom-5 right-5 flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-500 font-bold text-slate-950 shadow-lg transition hover:bg-cyan-400 active:scale-95"
+              >
+                ＋
+              </button>
             </section>
           </div>
 
