@@ -7,12 +7,19 @@
 // useMemo: 何度も計算しないように、必要なときだけ結果を返す
 import { useEffect, useMemo, useState } from "react";
 
+// タスクの優先度の種類を決める
+// 高・中・低で管理する
+type TaskPriority = "high" | "medium" | "low";
+type TaskFilter = "all" | "active" | "done";
+
 // タスクの型を定義
 // done: 完了したかどうか
+// priority: 優先度
 type Task = {
   id: number;
   text: string;
   done: boolean;
+  priority: TaskPriority;
 };
 
 // よく使うリンクの型を定義
@@ -24,12 +31,24 @@ type Shortcut = {
   emoji: string;
 };
 
+const priorityOrder: Record<TaskPriority, number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+const priorityLabel: Record<TaskPriority, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
 // 最初に表示するサンプルのタスク
 // 画面を開いたときに何が表示されるかをすぐ確認できるようにする
 const defaultTasks: Task[] = [
-  { id: 1, text: "デザイン案をまとめる", done: false },
-  { id: 2, text: "明日の会議資料を確認する", done: true },
-  { id: 3, text: "買い物リストを見直す", done: false },
+  { id: 1, text: "デザイン案をまとめる", done: false, priority: "high" },
+  { id: 2, text: "明日の会議資料を確認する", done: true, priority: "medium" },
+  { id: 3, text: "買い物リストを見直す", done: false, priority: "low" },
 ];
 
 // 最初に表示するよく使うリンク
@@ -78,12 +97,15 @@ export default function Home() {
   // now: 現在の時間
   const [tasks, setTasks] = useState<Task[]>([]);
   const [inputText, setInputText] = useState("");
+  const [taskPriority, setTaskPriority] = useState<TaskPriority>("medium");
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
   const [memoText, setMemoText] = useState("");
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [shortcutLabel, setShortcutLabel] = useState("");
   const [shortcutUrl, setShortcutUrl] = useState("");
   const [isReady, setIsReady] = useState(false);
   const [now, setNow] = useState(new Date());
+  const [calendarDate, setCalendarDate] = useState(new Date());
 
   // 最初にページが開かれたとき、ブラウザに保存されているデータを取り出す
   // localStorage はブラウザの保存箱のようなもの
@@ -93,7 +115,15 @@ export default function Home() {
     const savedShortcuts = localStorage.getItem("my-tools-shortcuts");
 
     // 保存データがあれば使う。なければ最初のデータを使う
-    setTasks(savedTasks ? JSON.parse(savedTasks) : defaultTasks);
+    const loadedTasks = savedTasks ? JSON.parse(savedTasks) : defaultTasks;
+    setTasks(
+      loadedTasks.map((task: Partial<Task>) => ({
+        id: task.id ?? Date.now(),
+        text: task.text ?? "",
+        done: Boolean(task.done),
+        priority: task.priority ?? "medium",
+      })),
+    );
     setMemoText(savedMemo ?? "");
     setShortcuts(savedShortcuts ? JSON.parse(savedShortcuts) : defaultShortcuts);
     setIsReady(true);
@@ -124,9 +154,9 @@ export default function Home() {
   }, [shortcuts, isReady]);
 
   // カレンダーを表示するために、必要な日付を計算する
-  const monthDays = useMemo(() => getCalendarDays(now), [now]);
-  const currentMonth = now.getMonth();
-  const currentYear = now.getFullYear();
+  const monthDays = useMemo(() => getCalendarDays(calendarDate), [calendarDate]);
+  const currentMonth = calendarDate.getMonth();
+  const currentYear = calendarDate.getFullYear();
 
   // 完了したタスクの数を数える
   const completedCount = tasks.filter((task) => task.done).length;
@@ -134,6 +164,27 @@ export default function Home() {
   // 進捗率を計算する
   // 例: 2 / 4 = 50%
   const progressRate = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
+
+  const visibleTasks = useMemo(() => {
+    const filtered = tasks.filter((task) => {
+      if (taskFilter === "active") return !task.done;
+      if (taskFilter === "done") return task.done;
+      return true;
+    });
+
+    return [...filtered].sort((left, right) => {
+      if (left.done !== right.done) return Number(left.done) - Number(right.done);
+      return priorityOrder[right.priority] - priorityOrder[left.priority];
+    });
+  }, [tasks, taskFilter]);
+
+  const changeMonth = (offset: number) => {
+    setCalendarDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  };
+
+  const resetCalendarToToday = () => {
+    setCalendarDate(new Date(now));
+  };
 
   // タスクを追加する処理
   const addTask = (event: React.FormEvent) => {
@@ -149,11 +200,13 @@ export default function Home() {
         id: Date.now(),
         text: safeText,
         done: false,
+        priority: taskPriority,
       },
     ]);
 
     // 入力欄を空に
     setInputText("");
+    setTaskPriority("medium");
   };
 
   // タスクの完了状態を切り替える処理
@@ -168,6 +221,11 @@ export default function Home() {
   // 指定したタスクを削除する処理
   const deleteTask = (taskId: number) => {
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
+  };
+
+  // メモを消す処理
+  const clearMemo = () => {
+    setMemoText("");
   };
 
   // よく使うリンクを追加する処理
@@ -194,7 +252,12 @@ export default function Home() {
     setShortcutUrl("");
   };
 
-  // ↓HTML↓
+  // リンクを削除する処理
+  const deleteShortcut = (shortcutId: number) => {
+    setShortcuts((currentShortcuts) => currentShortcuts.filter((shortcut) => shortcut.id !== shortcutId));
+  };
+
+  // HTML ---------------------------------------------------------------------------------------------------------
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -221,18 +284,15 @@ export default function Home() {
         <section className="mb-8 grid gap-4 md:grid-cols-3">
           <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-500/20 to-sky-500/5 p-5">
             <p className="text-sm text-cyan-200">完了タスク</p>
-            <p className="mt-3 text-3xl font-bold text-white">{completedCount}</p>
-            <p className="mt-2 text-sm text-slate-300">{tasks.length}件中</p>
+            <p className="mt-3 text-3xl font-bold text-white">{completedCount} / {tasks.length}</p>
           </div>
           <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-violet-500/20 to-purple-500/5 p-5">
             <p className="text-sm text-violet-200">進捗率</p>
             <p className="mt-3 text-3xl font-bold text-white">{progressRate}%</p>
-            <p className="mt-2 text-sm text-slate-300">今日の進捗</p>
           </div>
           <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/20 to-green-500/5 p-5">
             <p className="text-sm text-emerald-200">メモ</p>
             <p className="mt-3 text-3xl font-bold text-white">{memoText.trim() ? "記録済み" : "未記入"}</p>
-            <p className="mt-2 text-sm text-slate-300">気づきを残せます</p>
           </div>
         </section>
 
@@ -240,11 +300,34 @@ export default function Home() {
           <div className="space-y-6">
             {/* 左側の大きいエリア。カレンダーとタスクを並べて表示する */}
             <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex items-center justify-between gap-2">
                 <h2 className="text-xl font-semibold text-white">📅 カレンダー</h2>
-                <span className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-200">
-                  {currentYear}年 {currentMonth + 1}月
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => changeMonth(-1)}
+                    className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-200 transition hover:border-cyan-400"
+                  >
+                    ←
+                  </button>
+                  <span className="rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-200">
+                    {currentYear}年 {currentMonth + 1}月
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => changeMonth(1)}
+                    className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-200 transition hover:border-cyan-400"
+                  >
+                    →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetCalendarToToday}
+                    className="rounded-lg bg-cyan-500/20 px-2 py-1 text-xs font-medium text-cyan-200 transition hover:bg-cyan-500/30"
+                  >
+                    今日
+                  </button>
+                </div>
               </div>
 
               {/* 曜日を並べる行 */}
@@ -286,15 +369,33 @@ export default function Home() {
 
             {/* タスク一覧を表示するエリア */}
             <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold text-white">✅ タスク</h2>
-                <span className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">
-                  {tasks.length}件
-                </span>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { value: "all", label: "すべて" },
+                    { value: "active", label: "未完了" },
+                    { value: "done", label: "完了済み" },
+                  ].map((filter) => (
+                    <button
+                      key={filter.value}
+                      type="button"
+                      onClick={() => setTaskFilter(filter.value as TaskFilter)}
+                      className={[
+                        "rounded-full px-2.5 py-1 text-xs transition",
+                        taskFilter === filter.value
+                          ? "bg-cyan-500 text-slate-950"
+                          : "bg-slate-800 text-slate-300 hover:bg-slate-700",
+                      ].join(" ")}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* タスクを追加する入力フォーム */}
-              <form onSubmit={addTask} className="mb-5 flex gap-2">
+              <form onSubmit={addTask} className="mb-5 flex flex-col gap-2 sm:flex-row">
                 <input
                   type="text"
                   value={inputText}
@@ -302,6 +403,15 @@ export default function Home() {
                   placeholder="新しいタスクを入力"
                   className="flex-1 rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
                 />
+                <select
+                  value={taskPriority}
+                  onChange={(event) => setTaskPriority(event.target.value as TaskPriority)}
+                  className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
+                >
+                  <option value="high">高</option>
+                  <option value="medium">中</option>
+                  <option value="low">低</option>
+                </select>
                 <button
                   type="submit"
                   className="rounded-xl bg-cyan-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-cyan-400"
@@ -312,12 +422,12 @@ export default function Home() {
 
               {/* タスク一覧を表示する */}
               <ul className="space-y-3">
-                {tasks.length === 0 ? (
+                {visibleTasks.length === 0 ? (
                   <li className="rounded-2xl border border-dashed border-slate-700 p-4 text-sm text-slate-400">
-                    まだタスクがありません
+                    表示するタスクがありません
                   </li>
                 ) : (
-                  tasks.map((task) => (
+                  visibleTasks.map((task) => (
                     <li
                       key={task.id}
                       className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/40 p-3"
@@ -328,6 +438,18 @@ export default function Home() {
                         onChange={() => toggleTask(task.id)}
                         className="h-5 w-5 accent-cyan-500"
                       />
+                      <span
+                        className={[
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                          task.priority === "high"
+                            ? "bg-rose-500/20 text-rose-200"
+                            : task.priority === "medium"
+                              ? "bg-amber-500/20 text-amber-200"
+                              : "bg-emerald-500/20 text-emerald-200",
+                        ].join(" ")}
+                      >
+                        {priorityLabel[task.priority]}
+                      </span>
                       <span
                         className={[
                           "flex-1 text-sm",
@@ -355,7 +477,13 @@ export default function Home() {
             <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/30">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-white">📝 メモ</h2>
-                <span className="text-xs text-slate-400">Auto save</span>
+                <button
+                  type="button"
+                  onClick={clearMemo}
+                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-rose-400 hover:text-rose-200"
+                >
+                  クリア
+                </button>
               </div>
               <textarea
                 value={memoText}
@@ -394,19 +522,27 @@ export default function Home() {
 
               <div className="space-y-3">
                 {shortcuts.map((shortcut) => (
-                  <a
-                    key={shortcut.id}
-                    href={shortcut.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-left transition hover:border-cyan-400/60 hover:bg-slate-800/80"
-                  >
-                    <span className="flex items-center gap-3">
-                      <span className="text-xl">{shortcut.emoji}</span>
-                      <span className="text-sm font-medium text-slate-100">{shortcut.label}</span>
-                    </span>
-                    <span className="text-xs text-slate-400">Open</span>
-                  </a>
+                  <div key={shortcut.id} className="flex items-center gap-2">
+                    <a
+                      href={shortcut.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex flex-1 items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/40 px-3 py-2 text-left transition hover:border-cyan-400/60 hover:bg-slate-800/80"
+                    >
+                      <span className="flex items-center gap-3">
+                        <span className="text-xl">{shortcut.emoji}</span>
+                        <span className="text-sm font-medium text-slate-100">{shortcut.label}</span>
+                      </span>
+                      <span className="text-xs text-slate-400">Open</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => deleteShortcut(shortcut.id)}
+                      className="rounded-xl border border-slate-700 px-2 py-2 text-xs text-slate-300 transition hover:border-rose-400 hover:text-rose-200"
+                    >
+                      削除
+                    </button>
+                  </div>
                 ))}
               </div>
             </section>
