@@ -145,41 +145,7 @@ const toggleWeekdaySelection = (day: number, current: number[]) =>
   current.includes(day) ? current.filter((value) => value !== day) : [...current, day].sort((a, b) => a - b);
 
 // 最初に表示するサンプルタスク
-const defaultTasks: Task[] = [
-  {
-    id: 1,
-    text: "デザイン案をまとめる",
-    detail: "目的\n・今週の方向性を固める\n・参考サイトを3件に絞る",
-    done: false,
-    priority: "high",
-    date: formatDateKey(new Date()),
-    order: 1,
-    repeat: "none",
-    repeatWeekdays: [],
-  },
-  {
-    id: 2,
-    text: "明日の会議資料を確認する",
-    detail: "資料は最後に見直す\n- タイトル\n- 結論\n- 依頼事項",
-    done: true,
-    priority: "medium",
-    date: formatDateKey(new Date(Date.now() + 86400000)),
-    order: 2,
-    repeat: "none",
-    repeatWeekdays: [],
-  },
-  {
-    id: 3,
-    text: "買い物リストを見直す",
-    detail: "今日の買い出し\n・牛乳\n・パン\n・洗剤",
-    done: false,
-    priority: "low",
-    date: formatDateKey(new Date()),
-    order: 3,
-    repeat: "daily",
-    repeatWeekdays: [],
-  },
-];
+const defaultTasks: Task[] = [];
 
 // 最初に表示するよく使うリンク
 const defaultShortcuts: Shortcut[] = [
