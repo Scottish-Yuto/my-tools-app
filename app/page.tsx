@@ -8,11 +8,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-// タスクの優先度の種類を決める
-// 高・中・低で管理する
+// タスクの優先度（高・中・低）
 type TaskPriority = "high" | "medium" | "low";
+// 絞り込み
 type TaskFilter = "all" | "active" | "done";
-// 繰り返し設定。noneは繰り返さない通常のタスク
+// 繰り返し設定
 type TaskRepeat = "none" | "daily" | "weekly";
 
 // タスクの型を定義
@@ -43,7 +43,7 @@ type Shortcut = {
 };
 
 // メモの型を定義。tagで複数のメモを区別する
-// scope: "common"は毎日共通、"date"はdateで指定した日だけ表示
+// scope: "common"は共通、"date"は指定した日だけ表示
 type MemoScope = "common" | "date";
 
 type Memo = {
@@ -54,14 +54,14 @@ type Memo = {
   date: string;
 };
 
-// 優先度の順序を決める。数字が大きいほど高い優先度
+// 優先度を数値で管理
 const priorityOrder: Record<TaskPriority, number> = {
   high: 3,
   medium: 2,
   low: 1,
 };
 
-// 優先度を日本語で表示するときの対応表
+// 優先度：日本語対応表
 const priorityLabel: Record<TaskPriority, string> = {
   high: "高",
   medium: "中",
@@ -75,7 +75,7 @@ const priorityOptions: { value: TaskPriority; label: string }[] = [
   { value: "low", label: "低" },
 ];
 
-// タスクの優先度バッジの色（一覧のラベル表示で使う）
+// 優先度バッジの色（一覧のラベル表示で使う）
 const priorityBadgeClass: Record<TaskPriority, string> = {
   high: "bg-rose-500/20 text-rose-200",
   medium: "bg-amber-500/20 text-amber-200",
