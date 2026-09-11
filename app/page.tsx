@@ -689,6 +689,9 @@ export default function Home() {
       const { error } = await supabase.auth.signUp({
         email: loginEmail.trim(),
         password: loginPassword,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
       });
       setAuthMessage(
         error ? `登録エラー: ${error.message}` : "確認メールを送信しました。メール内のリンクをクリックしてください。"
